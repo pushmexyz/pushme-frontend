@@ -1,0 +1,63 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-heading: 'Bangers', cursive;
+  --font-body: 'DM Sans', sans-serif;
+  
+  --color-bg: #ffffff;
+  --color-text: #111111;
+  --color-accent: #FF2B2B;
+}
+
+html,
+body {
+  font-family: var(--font-body);
+  color: var(--color-text);
+  background: var(--color-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.font-bangers {
+  font-family: var(--font-heading);
+  letter-spacing: 1px;
+}
+
+.font-dm-sans {
+  font-family: var(--font-body);
+}
+
+/* Wallet adapter styles */
+.wallet-adapter-button {
+  @apply !rounded-full !bg-black !text-white hover:!bg-gray-800 !font-medium !px-6 !py-2;
+}
+
+.wallet-adapter-button-trigger {
+  @apply !rounded-full;
+}
+
+.wallet-adapter-modal-wrapper {
+  @apply !bg-white;
+}
+
+.wallet-adapter-modal {
+  @apply !bg-white !rounded-xl;
+}
+
+.wallet-adapter-modal-title {
+  @apply !text-black !font-bold;
+}
+
+.wallet-adapter-modal-list {
+  @apply !mt-4;
+}
+
+.wallet-adapter-modal-list-item {
+  @apply !rounded-lg !border !border-gray-200 hover:!bg-gray-50;
+}
+
+.wallet-adapter-modal-list-item button {
+  @apply !text-black;
+}
