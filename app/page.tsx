@@ -3,12 +3,13 @@
 import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import Link from 'next/link';
-import Navbar from '@/components/Navbar';
+import Navbar from '@/components/NavBar';
 import Footer from '@/components/Footer';
 import RedButton from '@/components/RedButton';
 import WalletConnectButton from '@/components/WalletConnectButton';
 import UsernameModal from '@/components/UsernameModal';
 import DonationModal from '@/components/DonationModal';
+import AddSongModal from '@/components/AddSongModal';
 import Toast from '@/components/Toast';
 import { useAuth } from '@/hooks/useAuth';
 
@@ -16,20 +17,21 @@ export default function Home() {
   const [hasError, setHasError] = useState(false);
   
   // Use hooks unconditionally - useAuth now handles WalletProvider not being available
-  const { isAuthenticated, hasUsername, user, wallet, connected, setUsername } = useAuth();
+  const { isAuthenticated, username, user, wallet, connected, setUsername, shouldShowUsernameModal, needsUsername } = useAuth();
   
   const [showUsernameModal, setShowUsernameModal] = useState(false);
   const [showDonationModal, setShowDonationModal] = useState(false);
+  const [showAddSongModal, setShowAddSongModal] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
 
-  // Show username modal ONLY when authenticated and username is missing
+  // Show username modal when shouldShowUsernameModal is true or needsUsername
   useEffect(() => {
-    if (isAuthenticated && !hasUsername) {
+    if (isAuthenticated && (shouldShowUsernameModal || needsUsername || !username)) {
       setShowUsernameModal(true);
     } else {
       setShowUsernameModal(false);
     }
-  }, [isAuthenticated, hasUsername]);
+  }, [isAuthenticated, shouldShowUsernameModal, needsUsername, username]);
 
   // Error boundary effect
   useEffect(() => {
@@ -66,8 +68,8 @@ export default function Home() {
   // The page will hydrate properly with React
 
   const handleButtonPress = () => {
-    // Check if wallet is connected first
-    if (!connected || !wallet) {
+    // Check authentication state (works even if wallet not connected)
+    if (!isAuthenticated) {
       setToast({
         message: 'Please connect your wallet to send donations',
         type: 'info',
@@ -75,16 +77,8 @@ export default function Home() {
       return;
     }
     
-    // If wallet connected but not authenticated, show message
-    if (!isAuthenticated) {
-      setToast({
-        message: 'Please sign in to continue',
-        type: 'info',
-      });
-      return;
-    }
-    
     // If authenticated, open donation modal
+    // The modal will handle wallet connection if needed for transactions
     setShowDonationModal(true);
   };
 
@@ -125,7 +119,7 @@ export default function Home() {
           className="mt-12 text-center"
         >
           {!isAuthenticated ? (
-            <WalletConnectButton />
+            <WalletConnectButton showDetection={true} />
           ) : (
             <button
               onClick={() => setShowDonationModal(true)}
@@ -241,6 +235,12 @@ export default function Home() {
             >
               Send Donation
             </button>
+            <button
+              onClick={() => setShowAddSongModal(true)}
+              className="px-8 py-4 bg-white/10 text-white border-2 border-white rounded-full font-dm-sans font-bold text-lg hover:bg-white/20 transition-colors"
+            >
+              Add Song to Queue
+            </button>
           </div>
         </div>
       </section>
@@ -250,7 +250,7 @@ export default function Home() {
       <UsernameModal
         isOpen={showUsernameModal}
         onComplete={() => {
-          // Modal will close automatically when hasUsername becomes true
+          // Modal will close automatically when username is set
           setShowUsernameModal(false);
         }}
       />
@@ -258,6 +258,11 @@ export default function Home() {
       <DonationModal
         isOpen={showDonationModal}
         onClose={() => setShowDonationModal(false)}
+      />
+
+      <AddSongModal
+        isOpen={showAddSongModal}
+        onClose={() => setShowAddSongModal(false)}
       />
 
       {toast && (

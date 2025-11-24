@@ -74,7 +74,9 @@ export default function DonationCard({ donation, onComplete }: DonationCardProps
             {donation.username || 'Anonymous'}
           </h3>
           <p className="text-sm font-dm-sans text-gray-600">
-            {formatDistanceToNow(new Date(donation.created_at), { addSuffix: true })}
+            {donation.created_at && !isNaN(new Date(donation.created_at).getTime())
+              ? formatDistanceToNow(new Date(donation.created_at), { addSuffix: true })
+              : 'Just now'}
           </p>
         </div>
         <div className="text-right">

@@ -17,6 +17,11 @@ export function startPolling(
       if (donations && donations.length > 0) {
         const latest = donations[0];
         
+        // Ensure created_at is valid
+        if (!latest.created_at || isNaN(new Date(latest.created_at).getTime())) {
+          latest.created_at = new Date().toISOString();
+        }
+        
         if (latest.id !== lastDonationId) {
           console.log('[POLLING] New donation detected:', latest.id);
           lastDonationId = latest.id;

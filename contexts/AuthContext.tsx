@@ -2,22 +2,40 @@
 
 import React, { createContext, useContext, useCallback, useEffect, useState, useRef, useMemo } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
-import { supabase } from '@/lib/supabaseClient';
+import { WalletName } from '@solana/wallet-adapter-base';
+import { overlayWS } from '@/lib/websocket';
 
-type UserRow = {
-  id: string;
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_REST_URL || 'http://localhost:5001';
+const SESSION_KEY = 'pm_auth';
+
+// Backend unified response shape
+type BackendAuthResponse = {
+  success: boolean;
+  authenticated: boolean;
+  user?: {
+    username: string;
+    wallet: string;
+  };
+  needs_username?: boolean;
+  needsUsername?: boolean; // Support both formats
+  wallet?: string; // Top-level wallet (from backend)
+  username?: string; // Top-level username (from backend)
+};
+
+type User = {
+  username: string;
   wallet: string;
-  username: string | null;
-  created_at: string;
-  updated_at: string;
 };
 
 type AuthState = {
   isAuthenticated: boolean;
   loading: boolean;
   error: string | null;
-  user: UserRow | null;
-  hasUsername: boolean;
+  user: User | null;
+  username: string | null;
+  wallet: string | null;
+  needsUsername: boolean;
+  shouldShowUsernameModal: boolean;
 };
 
 const initialState: AuthState = {
@@ -25,7 +43,10 @@ const initialState: AuthState = {
   loading: false,
   error: null,
   user: null,
-  hasUsername: false,
+  username: null,
+  wallet: null,
+  needsUsername: false,
+  shouldShowUsernameModal: false,
 };
 
 type AuthContextType = AuthState & {
@@ -41,62 +62,210 @@ type AuthContextType = AuthState & {
   } | null;
   wallet: string | null;
   connected: boolean;
+  hasUser: boolean;
+  hasUsername: boolean;
+  userUsername: string | undefined;
 };
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-async function getOrCreateUser(walletPublicKey: string): Promise<UserRow> {
-  if (!supabase) {
-    throw new Error('Database not configured. Please set up Supabase.');
+// Backend API calls
+async function authenticateWallet(publicKey: string): Promise<BackendAuthResponse> {
+  const response = await fetch(`${BACKEND_URL}/auth/wallet`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ publicKey }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(error || 'Failed to authenticate wallet');
   }
 
-  // 1) Try to find existing user by wallet
-  const { data: existing, error: selectError } = await supabase
-    .from('users')
-    .select('*')
-    .eq('wallet', walletPublicKey)
-    .maybeSingle<UserRow>();
+  return response.json();
+}
 
-  if (selectError && selectError.code !== 'PGRST116') {
-    console.error('[AUTH] Error fetching user by wallet:', selectError);
-    throw selectError;
+async function createUser(publicKey: string, username: string): Promise<BackendAuthResponse> {
+  const response = await fetch(`${BACKEND_URL}/auth/create-user`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ publicKey, username }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(error || 'Failed to create user');
   }
 
-  if (existing) {
-    console.log('[AUTH] Existing user found:', existing);
-    return existing;
+  return response.json();
+}
+
+// Helper function to restore session synchronously (before component mounts)
+function getInitialState(): AuthState {
+  if (typeof window === 'undefined') {
+    return initialState;
   }
 
-  // 2) No user → insert new one
-  const { data: inserted, error: insertError } = await supabase
-    .from('users')
-    .insert({ wallet: walletPublicKey })
-    .select()
-    .single<UserRow>();
-
-  if (insertError) {
-    console.error('[AUTH] Error inserting new user:', insertError);
-    throw insertError;
+  try {
+    const saved = window.localStorage.getItem(SESSION_KEY);
+    if (saved) {
+      const session = JSON.parse(saved);
+      console.log('[AUTH] Restoring session from localStorage:', session);
+      
+      if (session.isAuthenticated && session.wallet) {
+        const needsUsername = session.needsUsername || !session.username;
+        return {
+          isAuthenticated: true,
+          loading: false,
+          error: null,
+          user: session.username ? { wallet: session.wallet, username: session.username } : { wallet: session.wallet, username: '' },
+          username: session.username || null,
+          wallet: session.wallet,
+          needsUsername: needsUsername,
+          shouldShowUsernameModal: needsUsername,
+        };
+      }
+    }
+  } catch (error) {
+    console.error('[AUTH] Failed to restore session:', error);
+    window.localStorage.removeItem(SESSION_KEY);
   }
 
-  console.log('[AUTH] New user created:', inserted);
-  return inserted;
+  return initialState;
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const { publicKey, connected, connect, disconnect } = useWallet();
-  const [state, setState] = useState<AuthState>(initialState);
-  const [hasAuthenticatedThisSession, setHasAuthenticatedThisSession] = useState(false);
+  const { publicKey, connected, connect, disconnect, select, wallet } = useWallet();
+  const [state, setState] = useState<AuthState>(getInitialState);
+  const initialSessionExists = typeof window !== 'undefined' && !!window.localStorage.getItem(SESSION_KEY);
+  const [hasAuthenticatedThisSession, setHasAuthenticatedThisSession] = useState(initialSessionExists);
   const authenticatingRef = useRef(false);
+  const wsAuthHandlerRef = useRef<((event: any) => void) | null>(null);
+  const sessionRestoredRef = useRef(initialSessionExists);
+  const wasConnectedRef = useRef(false);
+
+  const cleanError = useCallback((err: any): string => {
+    if (!err) return 'Unknown error';
+    if (err.name) return err.name;
+    if (err.message) return err.message;
+    return String(err);
+  }, []);
+
+  // Update auth state helper - handles both needsUsername and authenticated cases
+  // ALWAYS sets loading: false and saves to localStorage
+  const updateAuthState = useCallback((response: BackendAuthResponse) => {
+    console.log('[AUTH] updateAuthState called with:', response);
+    
+    const needsUsername = response.needs_username === true || response.needsUsername === true;
+    const walletAddress = (response.wallet || response.user?.wallet || '').trim();
+    const usernameValue = (response.username || response.user?.username || '').trim() || null;
+
+    if (!response.success || !response.authenticated || !walletAddress) {
+      console.error('[AUTH] Invalid response:', response);
+      setState((s) => ({ ...s, loading: false }));
+      return false;
+    }
+
+    if (needsUsername || !usernameValue) {
+      // New user, needs username
+      const newState: AuthState = {
+        isAuthenticated: true,
+        loading: false, // ALWAYS set loading to false
+        error: null,
+        user: walletAddress ? { wallet: walletAddress, username: '' } : null,
+        username: null,
+        wallet: walletAddress,
+        needsUsername: true,
+        shouldShowUsernameModal: true,
+      };
+      setState(newState);
+
+      // Save to localStorage
+      if (typeof window !== 'undefined' && walletAddress) {
+        const sessionData = {
+          isAuthenticated: true,
+          wallet: walletAddress,
+          username: null,
+          needsUsername: true,
+        };
+        window.localStorage.setItem(SESSION_KEY, JSON.stringify(sessionData));
+        console.log('[AUTH] Saved to localStorage:', sessionData);
+      }
+
+      console.log('[AUTH] User authenticated, needs username:', walletAddress);
+      return true;
+    } else {
+      // User authenticated with username
+      const newState: AuthState = {
+        isAuthenticated: true,
+        loading: false, // ALWAYS set loading to false
+        error: null,
+        user: { wallet: walletAddress, username: usernameValue },
+        username: usernameValue,
+        wallet: walletAddress,
+        needsUsername: false,
+        shouldShowUsernameModal: false,
+      };
+      setState(newState);
+
+      // Save to localStorage
+      if (typeof window !== 'undefined' && walletAddress) {
+        const sessionData = {
+          isAuthenticated: true,
+          wallet: walletAddress,
+          username: usernameValue,
+        };
+        window.localStorage.setItem(SESSION_KEY, JSON.stringify(sessionData));
+        console.log('[AUTH] Saved to localStorage:', sessionData);
+      }
+
+      console.log('[AUTH] User authenticated:', usernameValue);
+      return true;
+    }
+  }, []);
+
+  // Verify session restoration on mount (already restored synchronously above)
+  useEffect(() => {
+    if (sessionRestoredRef.current && state.isAuthenticated) {
+      console.log('[AUTH] Session verified on mount:', state.username);
+    }
+  }, []);
+
+  // WebSocket auth message handler
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handleAuthMessage = (event: { type: 'auth'; user: { username: string; wallet: string } }) => {
+      console.log('[WS] Auth message received:', event.user);
+      const response: BackendAuthResponse = {
+        success: true,
+        authenticated: true,
+        user: {
+          username: event.user.username,
+          wallet: event.user.wallet,
+        },
+      };
+      updateAuthState(response);
+    };
+
+    // Subscribe to WebSocket auth messages
+    const unsubscribe = overlayWS.onAuth(handleAuthMessage);
+
+    return () => {
+      unsubscribe();
+    };
+  }, [updateAuthState]);
 
   const signInWithWallet = useCallback(async () => {
     if (!publicKey) {
-      console.warn('[AUTH] signInWithWallet called with no publicKey');
       return;
     }
 
     if (authenticatingRef.current) {
-      console.log('[AUTH] Already authenticating, skipping...');
       return;
     }
 
@@ -105,175 +274,343 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       authenticatingRef.current = true;
       setState((s) => ({ ...s, loading: true, error: null }));
-      console.log('[AUTH] Authenticating wallet:', walletAddress);
 
-      const user = await getOrCreateUser(walletAddress);
+      // Call backend to authenticate wallet
+      const result = await authenticateWallet(walletAddress);
 
-      const newState = {
-        isAuthenticated: true,
-        loading: false,
-        error: null,
-        user,
-        hasUsername: !!user.username,
-      };
-      setState(newState);
-      console.log('[AUTH] Authentication successful!');
-
-      // Optionally persist in localStorage
-      if (typeof window !== 'undefined') {
-        window.localStorage.setItem('pressme_wallet', walletAddress);
-        window.localStorage.setItem('pressme_user_id', user.id);
+      if (result.success && result.authenticated) {
+        // Update state based on response
+        updateAuthState(result);
+        setHasAuthenticatedThisSession(true);
+      } else {
+        throw new Error('Unexpected authentication response');
       }
-      setHasAuthenticatedThisSession(true);
     } catch (err: any) {
-      console.error('[AUTH] Authentication error:', err);
+      console.error('[AUTH] Authentication error:', cleanError(err));
       setState((s) => ({
         ...s,
         loading: false,
         error: 'Failed to authenticate wallet. Please try again.',
         isAuthenticated: false,
         user: null,
-        hasUsername: false,
+        username: null,
+        wallet: null,
+        needsUsername: false,
+        shouldShowUsernameModal: false,
       }));
     } finally {
       authenticatingRef.current = false;
     }
-  }, [publicKey]);
+  }, [publicKey, cleanError, updateAuthState]);
 
   // Public method: connect wallet then sign in
   const connectWalletAndSignIn = useCallback(async () => {
     try {
-      console.log('[WALLET] Starting connection...');
+      // Single guard: prevent parallel calls
+      if (authenticatingRef.current) {
+        console.log('[WALLET] Already connecting, skipping duplicate call');
+        return;
+      }
+
+      authenticatingRef.current = true;
+      setState((s) => ({ ...s, loading: true, error: null }));
+
+      // Check Phantom detection
+      const phantomDetected = typeof window !== 'undefined' && window.solana?.isPhantom;
+      if (!phantomDetected) {
+        console.error('[WALLET] Phantom wallet not detected');
+        setState((s) => ({
+          ...s,
+          loading: false,
+          error: 'Phantom wallet not detected. Please install Phantom extension.',
+        }));
+        authenticatingRef.current = false;
+        return;
+      }
+
+      console.log('[WALLET] Starting connection flow...');
+
+      // STEP 1: ALWAYS select Phantom (no conditions, no skipping - atomic flow)
+      if (!select || !connect) {
+        console.error('[WALLET] Wallet adapter not available');
+        setState((s) => ({
+          ...s,
+          loading: false,
+          error: 'Wallet adapter not available. Please refresh the page.',
+        }));
+        authenticatingRef.current = false;
+        return;
+      }
+
+      console.log('[WALLET] Step 1: Selecting Phantom wallet...');
+      await select('Phantom' as WalletName);
+      
+      // STEP 2: Wait for selection to complete (250ms as specified)
+      await new Promise(resolve => setTimeout(resolve, 250));
+      console.log('[WALLET] Step 2: Selection wait complete');
+      
+      // STEP 3: Connect to wallet (no conditions, always runs)
+      setHasAuthenticatedThisSession(false);
+      console.log('[WALLET] Step 3: Connecting to wallet...');
       await connect();
-      console.log('[WALLET] Wallet connected.');
-    } catch (err) {
-      console.error('[AUTH] Wallet connect failed:', err);
+      
+      console.log('[WALLET] Step 4: Wallet connected successfully');
+
+      // STEP 4: Wait for publicKey to be available (poll up to 10 times)
+      let walletAddress: string | null = null;
+      let attempts = 0;
+      while (!walletAddress && attempts < 10) {
+        if (publicKey) {
+          walletAddress = publicKey.toBase58();
+          break;
+        }
+        // Try to get from wallet adapter directly
+        const currentPublicKey = wallet?.adapter?.publicKey;
+        if (currentPublicKey) {
+          walletAddress = currentPublicKey.toBase58();
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+        attempts++;
+      }
+
+      if (!walletAddress) {
+        console.error('[WALLET] Failed to get wallet address after connection');
+        setState((s) => ({
+          ...s,
+          loading: false,
+          error: 'Failed to get wallet address. Please try again.',
+        }));
+        authenticatingRef.current = false;
+        return;
+      }
+
+      console.log('[WALLET] Step 5: Wallet address obtained:', walletAddress);
+
+      // STEP 5: Call backend to authenticate
+      console.log('[AUTH] Step 6: Calling backend to authenticate wallet...');
+      const result = await authenticateWallet(walletAddress);
+      console.log('[AUTH] Step 7: Backend response received:', result);
+
+      // STEP 6: Format and update auth state
+      const authResponse: BackendAuthResponse = {
+        success: result.success || false,
+        authenticated: result.authenticated !== false,
+        wallet: result.wallet || walletAddress,
+        username: result.username || result.user?.username || undefined,
+        needsUsername: result.needsUsername === true || result.needs_username === true,
+        user: result.user || (result.username ? { wallet: walletAddress, username: result.username } : undefined),
+      };
+
+      console.log('[AUTH] Step 8: Updating auth state with:', authResponse);
+      updateAuthState(authResponse);
+      
+      // Ensure loading is false
+      setState((s) => ({ ...s, loading: false }));
+      setHasAuthenticatedThisSession(true);
+      
+      console.log('[AUTH] Step 9: Authentication complete - session saved to localStorage');
+    } catch (err: any) {
+      // NEVER throw - always handle gracefully (no crashes, no Next.js error screen)
+      console.error('[WALLET] Connection/Auth error:', cleanError(err));
+      
+      // Reset state on error (no throw, no crash)
       setState((s) => ({
         ...s,
-        error: 'Wallet connection failed.',
+        error: cleanError(err),
         isAuthenticated: false,
+        loading: false,
+        needsUsername: false,
+        shouldShowUsernameModal: false,
       }));
+      setHasAuthenticatedThisSession(false);
+    } finally {
+      // Always reset the guard
+      authenticatingRef.current = false;
     }
-  }, [connect]);
+  }, [connect, select, publicKey, wallet, cleanError, updateAuthState, authenticateWallet]);
 
   // Auto-auth when wallet becomes connected (only once per session)
+  // But skip if we already have a restored session
   useEffect(() => {
+    // If session was restored, don't auto-auth again unless wallet reconnects with different key
+    if (sessionRestoredRef.current && state.isAuthenticated) {
+      // Check if the connected wallet matches the restored session
+      if (publicKey && publicKey.toBase58() === state.wallet) {
+        // Wallet matches restored session, we're good
+        return;
+      }
+    }
+
+    // Normal auto-auth flow
     if (connected && publicKey && !hasAuthenticatedThisSession && !authenticatingRef.current) {
-      console.log('[AUTH] Wallet connected, authenticating...');
       void signInWithWallet();
     }
-  }, [connected, publicKey, hasAuthenticatedThisSession, signInWithWallet]);
+  }, [connected, publicKey, hasAuthenticatedThisSession, signInWithWallet, state.isAuthenticated, state.wallet]);
 
-  // Reset auth state on disconnect
+  // Track if wallet was ever connected this session (to detect active disconnect vs page load)
   useEffect(() => {
-    if (!connected && state.isAuthenticated) {
-      console.log('[AUTH] Wallet disconnected.');
+    if (connected) {
+      wasConnectedRef.current = true;
+    }
+  }, [connected]);
+
+  // Reset auth state on disconnect - but only if user actively disconnected (not page load)
+  useEffect(() => {
+    // If session was restored, NEVER clear it automatically
+    // User is authenticated even if wallet isn't connected (Phantom doesn't auto-connect)
+    if (sessionRestoredRef.current) {
+      // Keep the session - user is authenticated even if wallet not connected
+      // Only clear on explicit logout
+      return;
+    }
+
+    // Only clear if wallet was connected and then disconnected (user actively disconnected)
+    // AND we didn't restore a session
+    if (!connected && wasConnectedRef.current && state.isAuthenticated && !sessionRestoredRef.current) {
+      console.log('[AUTH] Wallet disconnected, clearing session');
       setState(initialState);
       setHasAuthenticatedThisSession(false);
+      wasConnectedRef.current = false;
       if (typeof window !== 'undefined') {
-        window.localStorage.removeItem('pressme_wallet');
-        window.localStorage.removeItem('pressme_user_id');
+        window.localStorage.removeItem(SESSION_KEY);
       }
     }
   }, [connected, state.isAuthenticated]);
 
-  // Update username
+  // Update username via backend
+  // Uses wallet from state (persists) rather than requiring publicKey to be connected
   const setUsername = useCallback(
     async (username: string) => {
-      if (!state.user) {
-        throw new Error('Not authenticated');
-      }
-
-      if (!supabase) {
-        throw new Error('Database not configured');
+      // Use wallet from state (persists even if Phantom not actively connected)
+      const walletAddress = state.wallet || (publicKey ? publicKey.toBase58() : null);
+      
+      if (!walletAddress) {
+        throw new Error('Wallet address not available');
       }
 
       setState((s) => ({ ...s, loading: true, error: null }));
 
       try {
-        const { data, error } = await supabase
-          .from('users')
-          .update({ username })
-          .eq('id', state.user.id)
-          .select()
-          .single<UserRow>();
+        console.log('[AUTH] Creating user with username:', username, 'wallet:', walletAddress);
+        const result = await createUser(walletAddress, username);
+        console.log('[AUTH] Backend response from create-user:', result);
 
-        if (error || !data) {
-          console.error('[AUTH] Error updating username:', error);
-          setState((s) => ({
-            ...s,
-            loading: false,
-            error: 'Failed to set username. Please try again.',
-          }));
-          throw new Error('Failed to set username. Please try again.');
-        }
+        // Backend returns: { success, wallet, username, needsUsername: false }
+        // Format response to match updateAuthState expectations
+        const authResponse: BackendAuthResponse = {
+          success: result.success || false,
+          authenticated: result.authenticated !== false, // Default to true
+          wallet: result.wallet || walletAddress,
+          username: result.username || result.user?.username || username,
+          needsUsername: false, // After creating username, needsUsername is always false
+          user: result.user || { wallet: walletAddress, username: result.username || username },
+        };
 
+        console.log('[AUTH] Calling updateAuthState with:', authResponse);
+        // ALWAYS call updateAuthState() to update global state
+        updateAuthState(authResponse);
+        
+        // Ensure loading is false and modal closes
         setState((s) => ({
           ...s,
           loading: false,
-          user: data,
-          hasUsername: !!data.username,
+          shouldShowUsernameModal: false,
         }));
-
-        console.log('[AUTH] Username updated successfully');
-      } catch (error) {
-        console.error('[AUTH] Error setting username:', error);
+        
+        console.log('[AUTH] Username saved and state updated:', authResponse.username);
+      } catch (error: any) {
+        console.error('[AUTH] Error setting username:', cleanError(error));
+        setState((s) => ({
+          ...s,
+          loading: false,
+          error: 'Failed to set username. Please try again.',
+        }));
         throw error;
       }
     },
-    [state.user]
+    [state.wallet, publicKey, cleanError, updateAuthState]
   );
 
-  // Disconnect
+  // Disconnect - clears localStorage and resets state
   const logout = useCallback(async () => {
     try {
-      await disconnect();
-      console.log('[AUTH] Wallet disconnected.');
-    } catch (err) {
-      console.error('[AUTH] Error during disconnect:', err);
-    } finally {
-      setState(initialState);
+      console.log('[AUTH] Logging out...');
+      
+      // Disconnect wallet adapter
+      try {
+        await disconnect();
+      } catch (err) {
+        // Ignore disconnect errors - wallet might already be disconnected
+        console.warn('[AUTH] Disconnect warning:', cleanError(err));
+      }
+      
+      // Clear all state
+      sessionRestoredRef.current = false;
+      wasConnectedRef.current = false;
+      authenticatingRef.current = false;
       setHasAuthenticatedThisSession(false);
+      
+      // Reset auth state
+      setState({
+        isAuthenticated: false,
+        loading: false,
+        error: null,
+        user: null,
+        username: null,
+        wallet: null,
+        needsUsername: false,
+        shouldShowUsernameModal: false,
+      });
+      
+      // Clear localStorage
       if (typeof window !== 'undefined') {
-        window.localStorage.removeItem('pressme_wallet');
-        window.localStorage.removeItem('pressme_user_id');
+        window.localStorage.removeItem(SESSION_KEY);
+        console.log('[AUTH] Session cleared from localStorage');
+      }
+      
+      console.log('[AUTH] Logout complete');
+    } catch (err) {
+      console.error('[AUTH] Logout error:', cleanError(err));
+      // Even if there's an error, clear the state
+      sessionRestoredRef.current = false;
+      wasConnectedRef.current = false;
+      setHasAuthenticatedThisSession(false);
+      setState(initialState);
+      if (typeof window !== 'undefined') {
+        window.localStorage.removeItem(SESSION_KEY);
       }
     }
-  }, [disconnect]);
+  }, [disconnect, cleanError]);
 
   const walletPublicKey = publicKey ? publicKey.toBase58() : null;
+  // Use session wallet if available, otherwise use connected wallet
+  const displayWallet = state.wallet || walletPublicKey;
 
   // Memoize context value to prevent unnecessary re-renders
   const contextValue: AuthContextType = useMemo(
     () => ({
       ...state,
-      walletPublicKey,
+      walletPublicKey: displayWallet, // Use session wallet or connected wallet
       connectWalletAndSignIn,
       setUsername,
       logout,
-      // Legacy compatibility - map user to match old interface
+      // Legacy compatibility
       user: state.user
         ? {
-            id: state.user.id,
+            id: state.user.wallet, // Use wallet as ID for compatibility
             wallet: state.user.wallet,
             username: state.user.username,
           }
         : null,
-      wallet: walletPublicKey,
+      wallet: displayWallet, // Use session wallet or connected wallet
       connected: connected && !!publicKey,
-    }),
-    [state, walletPublicKey, connectWalletAndSignIn, setUsername, logout, connected, publicKey]
-  );
-
-  // Debug logging when state changes
-  useEffect(() => {
-    console.log('[AUTH CONTEXT] State changed:', {
-      isAuthenticated: state.isAuthenticated,
       hasUser: !!state.user,
-      username: state.user?.username,
-      walletPublicKey,
-    });
-  }, [state.isAuthenticated, state.user, walletPublicKey]);
+      hasUsername: !!state.username,
+      userUsername: state.username || undefined,
+    }),
+    [state, displayWallet, connectWalletAndSignIn, setUsername, logout, connected, publicKey]
+  );
 
   return <AuthContext.Provider value={contextValue}>{children}</AuthContext.Provider>;
 }
@@ -285,4 +622,3 @@ export function useAuth(): AuthContextType {
   }
   return context;
 }
-

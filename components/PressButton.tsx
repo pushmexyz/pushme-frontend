@@ -49,7 +49,8 @@ export default function PressButton({
     setIsLoading(true);
 
     try {
-      const response = await fetch('/api/events/press', {
+      const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_REST_URL || 'http://localhost:5001';
+      const response = await fetch(`${BACKEND_URL}/events/press`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -112,10 +113,10 @@ export default function PressButton({
           }}
         >
           {isLoading ? (
-            <motion.div
+            <motion.span
               animate={{ rotate: 360 }}
               transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
-              className="h-8 w-8 border-4 border-white border-t-transparent rounded-full"
+              className="inline-block h-8 w-8 border-4 border-white border-t-transparent rounded-full"
             />
           ) : (
             <span>PRESS ME</span>
@@ -123,9 +124,9 @@ export default function PressButton({
           
           {/* Ripple effects */}
           {ripples.map((ripple) => (
-            <motion.div
+            <motion.span
               key={ripple.id}
-              className="absolute rounded-full border-2 border-white"
+              className="absolute rounded-full border-2 border-white pointer-events-none"
               style={{
                 left: ripple.x,
                 top: ripple.y,
@@ -148,8 +149,8 @@ export default function PressButton({
           
           {/* Continuous pulse ring */}
           {!isPressed && (
-            <motion.div
-              className="absolute inset-0 rounded-full border-2 border-white"
+            <motion.span
+              className="absolute inset-0 rounded-full border-2 border-white pointer-events-none"
               animate={{
                 scale: [1, 1.5, 2],
                 opacity: [0.5, 0, 0],

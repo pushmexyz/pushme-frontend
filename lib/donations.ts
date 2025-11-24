@@ -1,4 +1,3 @@
-import { authFetch } from './api';
 import { Donation } from '@/store/donationStore';
 
 export interface DonateRequest {
@@ -33,43 +32,28 @@ export const DONATION_PRICES = {
   video: 0.1,
 };
 
-export async function submitDonation(
-  token: string,
-  data: DonateRequest
-): Promise<DonateResponse> {
-  console.log('[DONATIONS] Submitting donation:', data.type, data.username);
-  return authFetch<DonateResponse>('/donate', token, data);
-}
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_REST_URL || 'http://localhost:5001';
 
 export async function getRecentDonations(
   limit: number = 10
 ): Promise<RecentDonationsResponse> {
-  console.log('[DONATIONS] Fetching recent donations from Supabase, limit:', limit);
-  
-  const { supabase } = await import('./supabaseClient');
-  
-  if (!supabase) {
-    console.warn('[DONATIONS] Supabase not configured, returning empty donations');
-    return { donations: [] };
-  }
-
   try {
-    const { data, error } = await supabase
-      .from('donations')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(limit);
+    const response = await fetch(`${BACKEND_URL}/donation/recent?limit=${limit}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
 
-    if (error) {
-      console.error('[DONATIONS] Error fetching donations:', error);
+    if (!response.ok) {
+      console.error('[DONATIONS] Failed to fetch recent donations');
       return { donations: [] };
     }
 
-    console.log('[DONATIONS] Fetched donations:', data?.length || 0);
-    return { donations: data || [] };
+    const data = await response.json();
+    return { donations: data.donations || [] };
   } catch (error) {
     console.error('[DONATIONS] Error fetching donations:', error);
     return { donations: [] };
   }
 }
-

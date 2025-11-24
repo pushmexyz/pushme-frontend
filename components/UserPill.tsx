@@ -2,10 +2,10 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { ChevronDown, LogOut } from 'lucide-react';
-import { useAuth } from '@/hooks/useAuth';
+import { useAuth } from '@/contexts/AuthContext';
 
 export default function UserPill() {
-  const { user, walletPublicKey, logout } = useAuth();
+  const { username, wallet, walletPublicKey, logout, isAuthenticated } = useAuth();
   const [showDropdown, setShowDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -23,19 +23,21 @@ export default function UserPill() {
   }, [showDropdown]);
 
   const handleDisconnect = useCallback(async () => {
-    console.log('[USER PILL] Disconnecting...');
     await logout();
     setShowDropdown(false);
   }, [logout]);
 
-  if (!user || !walletPublicKey) {
+  // Use wallet from session (persisted) or walletPublicKey (connected wallet)
+  const displayWallet = wallet || walletPublicKey;
+
+  if (!isAuthenticated || !username || !displayWallet) {
     return null;
   }
 
   const shortWallet =
-    walletPublicKey.length > 8
-      ? `${walletPublicKey.slice(0, 4)}...${walletPublicKey.slice(-4)}`
-      : walletPublicKey;
+    displayWallet.length > 8
+      ? `${displayWallet.slice(0, 4)}...${displayWallet.slice(-4)}`
+      : displayWallet;
 
   return (
     <div className="relative" ref={dropdownRef}>
@@ -44,11 +46,11 @@ export default function UserPill() {
         className="px-4 py-2 bg-black text-white rounded-full font-dm-sans font-semibold hover:bg-gray-800 transition-colors flex items-center gap-2"
       >
         {/* Profile picture placeholder */}
-        <div className="w-6 h-6 rounded-full bg-[#FF2B2B] flex items-center justify-center text-white text-xs font-bold">
-          {user.username ? user.username.charAt(0).toUpperCase() : shortWallet.charAt(0).toUpperCase()}
-        </div>
-        <span>{user.username || shortWallet}</span>
-        {shortWallet && user.username && (
+        <span className="inline-flex w-6 h-6 rounded-full bg-[#FF2B2B] items-center justify-center text-white text-xs font-bold flex-shrink-0">
+          {username ? username.charAt(0).toUpperCase() : shortWallet.charAt(0).toUpperCase()}
+        </span>
+        <span>{username || shortWallet}</span>
+        {shortWallet && username && (
           <span className="text-xs opacity-70">{shortWallet}</span>
         )}
         <ChevronDown className="w-4 h-4" />
@@ -59,12 +61,12 @@ export default function UserPill() {
           <div className="p-3 border-b border-gray-200">
             <p className="text-xs font-dm-sans text-gray-500 mb-1">Wallet</p>
             <p className="text-sm font-dm-sans font-mono text-black break-all">
-              {walletPublicKey}
+              {displayWallet}
             </p>
-            {user.username && (
+            {username && (
               <>
                 <p className="text-xs font-dm-sans text-gray-500 mb-1 mt-2">Username</p>
-                <p className="text-sm font-dm-sans text-black">{user.username}</p>
+                <p className="text-sm font-dm-sans text-black">{username}</p>
               </>
             )}
           </div>

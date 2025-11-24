@@ -14,7 +14,7 @@ interface DonationModalProps {
 }
 
 export default function DonationModal({ isOpen, onClose }: DonationModalProps) {
-  const { isAuthenticated, hasUsername, connectWalletAndSignIn } = useAuth();
+  const { isAuthenticated, username, connectWalletAndSignIn } = useAuth();
   const [showUsernameModal, setShowUsernameModal] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: ToastType } | null>(null);
   const [pendingDonation, setPendingDonation] = useState<boolean>(false);
@@ -36,7 +36,7 @@ export default function DonationModal({ isOpen, onClose }: DonationModalProps) {
       return;
     }
 
-    if (!hasUsername) {
+    if (!username) {
       // Step 2: Show username modal
       setPendingDonation(true);
       setShowUsernameModal(true);
@@ -49,25 +49,25 @@ export default function DonationModal({ isOpen, onClose }: DonationModalProps) {
 
   // Monitor auth state changes to continue donation flow
   useEffect(() => {
-    if (pendingDonation && isAuthenticated && hasUsername) {
+    if (pendingDonation && isAuthenticated && username) {
       // Auth and username are now set, donation can proceed
       // The donation components will handle the transaction automatically
       // when the user clicks send again (or we can trigger it programmatically)
       setPendingDonation(false);
       setShowUsernameModal(false);
     }
-  }, [pendingDonation, isAuthenticated, hasUsername]);
+  }, [pendingDonation, isAuthenticated, username]);
 
   // Show username modal when authenticated but no username
   useEffect(() => {
-    if (isOpen && isAuthenticated && !hasUsername && !pendingDonation) {
+    if (isOpen && isAuthenticated && !username && !pendingDonation) {
       // Only show automatically if modal just opened and user is authenticated
       // Don't show if we're in the middle of a donation flow
       setShowUsernameModal(true);
-    } else if (isAuthenticated && hasUsername) {
+    } else if (isAuthenticated && username) {
       setShowUsernameModal(false);
     }
-  }, [isOpen, isAuthenticated, hasUsername, pendingDonation]);
+  }, [isOpen, isAuthenticated, username, pendingDonation]);
 
   // Prevent body scroll when modal is open
   useEffect(() => {

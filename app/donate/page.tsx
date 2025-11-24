@@ -5,19 +5,19 @@ import { useAuth } from '@/hooks/useAuth';
 import DonationPanel from '@/components/DonationPanel';
 import WalletConnectButton from '@/components/WalletConnectButton';
 import UsernameModal from '@/components/UsernameModal';
-import Navbar from '@/components/Navbar';
+import Navbar from '@/components/NavBar';
 
 export default function DonatePage() {
-  const { isAuthenticated, hasUsername } = useAuth();
+  const { isAuthenticated, username } = useAuth();
   const [showUsernameModal, setShowUsernameModal] = useState(false);
 
   useEffect(() => {
-    if (isAuthenticated && !hasUsername) {
+    if (isAuthenticated && !username) {
       setShowUsernameModal(true);
     } else {
       setShowUsernameModal(false);
     }
-  }, [isAuthenticated, hasUsername]);
+  }, [isAuthenticated, username]);
 
   return (
     <div className="min-h-screen bg-white">

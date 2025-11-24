@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { useDonationStore, Donation } from '@/store/donationStore';
 import { getRecentDonations } from '@/lib/donations';
-import Navbar from '@/components/Navbar';
+import Navbar from '@/components/NavBar';
 import WalletConnectButton from '@/components/WalletConnectButton';
 import { formatDistanceToNow } from 'date-fns';
 
@@ -105,7 +105,9 @@ function DonationCard({ donation }: { donation: Donation }) {
             {donation.type.toUpperCase()}
           </p>
           <p className="font-dm-sans text-sm text-gray-600">
-            {formatDistanceToNow(new Date(donation.created_at), { addSuffix: true })}
+            {donation.created_at && !isNaN(new Date(donation.created_at).getTime())
+              ? formatDistanceToNow(new Date(donation.created_at), { addSuffix: true })
+              : 'Just now'}
           </p>
         </div>
         <p className="font-bangers text-lg text-black">{donation.price} SOL</p>

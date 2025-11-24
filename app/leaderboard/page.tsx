@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
-import Navbar from '@/components/Navbar';
+import Navbar from '@/components/NavBar';
 import Leaderboard from '@/components/Leaderboard';
 import { motion } from 'framer-motion';
 

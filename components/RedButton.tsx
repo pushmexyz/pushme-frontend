@@ -41,11 +41,11 @@ export default function RedButton({
       disabled={disabled}
     >
       {/* Glossy overlay */}
-      <div className="absolute inset-0 bg-gradient-to-br from-white/30 to-transparent rounded-full pointer-events-none" />
+      <span className="absolute inset-0 bg-gradient-to-br from-white/30 to-transparent rounded-full pointer-events-none" />
       
       {/* Glow effect */}
-      <motion.div
-        className="absolute inset-0 rounded-full"
+      <motion.span
+        className="absolute inset-0 rounded-full pointer-events-none"
         animate={{
           boxShadow: [
             '0 0 40px rgba(255, 43, 43, 0.6)',
@@ -65,8 +65,8 @@ export default function RedButton({
 
       {/* Ripple effect on click */}
       {isPressed && (
-        <motion.div
-          className="absolute inset-0 rounded-full bg-white/30"
+        <motion.span
+          className="absolute inset-0 rounded-full bg-white/30 pointer-events-none"
           initial={{ scale: 0, opacity: 0.8 }}
           animate={{ scale: 2, opacity: 0 }}
           transition={{ duration: 0.6 }}

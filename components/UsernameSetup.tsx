@@ -35,13 +35,14 @@ export default function UsernameSetup({
     setIsLoading(true);
 
     try {
-      const response = await fetch('/api/auth/save-username', {
+      const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_REST_URL || 'http://localhost:5001';
+      const response = await fetch(`${BACKEND_URL}/auth/create-user`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          wallet,
+          publicKey: wallet,
           username: isAnonymous ? null : username.trim(),
         }),
       });

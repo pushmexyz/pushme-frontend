@@ -6,6 +6,7 @@ import { useWallet } from '@solana/wallet-adapter-react';
 import { uploadMedia } from '@/lib/api';
 import { DONATION_PRICES } from '@/lib/donations';
 import { sendDonation } from '@/lib/sendDonation';
+import { parseDonationError, getToastMessage } from '@/lib/errorHandling';
 import MediaUploader from './MediaUploader';
 
 interface ImageDonationProps {
@@ -15,7 +16,7 @@ interface ImageDonationProps {
 }
 
 export default function ImageDonation({ onSuccess, onError, onAuthRequired }: ImageDonationProps) {
-  const { user } = useAuth();
+  const { user, wallet, isAuthenticated } = useAuth();
   const { publicKey } = useWallet();
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
@@ -26,12 +27,21 @@ export default function ImageDonation({ onSuccess, onError, onAuthRequired }: Im
       onError('Please select an image');
       return;
     }
-    if (!publicKey || !user) {
+    
+    // Check authentication first
+    if (!isAuthenticated || !user) {
       if (onAuthRequired) {
         onAuthRequired();
         return;
       }
       onError('Please connect wallet and select an image');
+      return;
+    }
+
+    // Use session wallet if available, otherwise use connected wallet
+    const walletAddress = publicKey ? publicKey.toBase58() : wallet;
+    if (!walletAddress) {
+      onError('Please connect your wallet');
       return;
     }
 
@@ -43,24 +53,22 @@ export default function ImageDonation({ onSuccess, onError, onAuthRequired }: Im
       const mediaData = await uploadMedia(file, 'image');
       console.log('[IMAGE DONATION] Media uploaded');
 
-      // Use backend flow: request transaction, sign with Phantom, send back to backend
+      // Use backend flow: POST /donation/start → sign → POST /donation/confirm
       const result = await sendDonation({
-        wallet: publicKey.toBase58(),
+        wallet: walletAddress,
         type: 'image',
         amount: DONATION_PRICES.image,
-        content: mediaData,
+        mediaUrl: mediaData,
       });
 
-      console.log('[IMAGE DONATION] Donation completed successfully:', result.signature);
+      console.log('[IMAGE DONATION] Donation completed successfully:', result.txSignature);
       onSuccess();
       setFile(null);
     } catch (err: any) {
       console.error('[IMAGE DONATION] Error:', err);
-      if (err.message?.includes('cancelled') || err.message?.includes('rejected')) {
-        onError('Transaction was cancelled. Please try again.');
-      } else {
-        onError(err.message || 'Failed to send donation');
-      }
+      const donationError = parseDonationError(err);
+      const errorMessage = getToastMessage(donationError);
+      onError(errorMessage);
     } finally {
       setLoading(false);
     }

@@ -51,7 +51,7 @@ export default function UsernameModal({
       setLoading(true);
       console.log('[USERNAME] Setting username:', username);
       await setUsername(username);
-      // Username is set successfully - hasUsername will become true in useAuth
+      // Username is set successfully - username will be available in useAuth
       // Call callback if provided (e.g., to continue with donation transaction)
       if (onUsernameSet) {
         onUsernameSet();

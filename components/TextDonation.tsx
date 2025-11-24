@@ -5,6 +5,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { DONATION_PRICES } from '@/lib/donations';
 import { sendDonation } from '@/lib/sendDonation';
+import { parseDonationError, getToastMessage } from '@/lib/errorHandling';
 
 interface TextDonationProps {
   onSuccess: () => void;
@@ -13,7 +14,7 @@ interface TextDonationProps {
 }
 
 export default function TextDonation({ onSuccess, onError, onAuthRequired }: TextDonationProps) {
-  const { user } = useAuth();
+  const { user, wallet, isAuthenticated, connectWalletAndSignIn } = useAuth();
   const { publicKey } = useWallet();
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(false);
@@ -24,8 +25,9 @@ export default function TextDonation({ onSuccess, onError, onAuthRequired }: Tex
       onError('Please enter a message');
       return;
     }
-    if (!publicKey || !user) {
-      // If onAuthRequired callback is provided, use it instead of showing error
+    
+    // Check authentication first
+    if (!isAuthenticated || !user) {
       if (onAuthRequired) {
         onAuthRequired();
         return;
@@ -34,33 +36,58 @@ export default function TextDonation({ onSuccess, onError, onAuthRequired }: Tex
       return;
     }
 
+    // Use session wallet if available, otherwise use connected wallet
+    // If wallet not connected but user is authenticated, connect it
+    let walletAddress = publicKey ? publicKey.toBase58() : wallet;
+    
+    // If wallet not connected but user is authenticated, try to connect
+    if (!publicKey && wallet) {
+      try {
+        console.log('[TEXT DONATION] Wallet not connected, connecting...');
+        await connectWalletAndSignIn();
+        // Wait a bit for connection to establish
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        // Re-check publicKey after connection attempt
+        // Note: We'll use the session wallet address if connection fails
+        walletAddress = wallet; // Use session wallet as fallback
+      } catch (err) {
+        console.warn('[TEXT DONATION] Connection failed, using session wallet:', err);
+        // Use session wallet address even if connection fails
+        walletAddress = wallet;
+      }
+    }
+
+    if (!walletAddress) {
+      onError('Please connect your wallet');
+      return;
+    }
+
     try {
       setLoading(true);
       console.log('[TEXT DONATION] Starting text donation', {
         text: text.trim(),
-        publicKey: publicKey.toBase58(),
+        wallet: walletAddress,
         user: user.username,
         amount: DONATION_PRICES.text,
       });
 
-      // Use backend flow: request transaction, sign with Phantom, send back to backend
+      // Use backend flow: POST /donation/start → sign → POST /donation/confirm
       const result = await sendDonation({
-        wallet: publicKey.toBase58(),
+        wallet: walletAddress,
         type: 'text',
         amount: DONATION_PRICES.text,
-        content: text.trim(),
+        message: text.trim(),
       });
 
-      console.log('[TEXT DONATION] Donation completed successfully:', result.signature);
+      console.log('[TEXT DONATION] Donation completed successfully:', result.txSignature);
       onSuccess();
       setText('');
     } catch (err: any) {
       console.error('[TEXT DONATION] Error:', err);
-      if (err.message?.includes('cancelled') || err.message?.includes('rejected')) {
-        onError('Transaction was cancelled. Please try again.');
-      } else {
-        onError(err.message || 'Failed to send donation. Please try again.');
-      }
+      // Use error handling utility to parse and get user-friendly message
+      const donationError = parseDonationError(err);
+      const errorMessage = getToastMessage(donationError);
+      onError(errorMessage);
     } finally {
       setLoading(false);
     }

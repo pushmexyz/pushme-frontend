@@ -8,6 +8,7 @@ import GifDonation from './GifDonation';
 import AudioDonation from './AudioDonation';
 import VideoDonation from './VideoDonation';
 import Toast, { ToastType } from './Toast';
+import { parseDonationError, getToastMessage } from '@/lib/errorHandling';
 
 type DonationType = 'text' | 'gif' | 'image' | 'audio' | 'video';
 
@@ -40,12 +41,18 @@ export default function DonationPanel({ onSuccess, onError, onAuthRequired }: Do
     setTimeout(() => setToast(null), 2000);
   };
 
-  const handleError = (error: string) => {
-    setToast({ message: error, type: 'error' });
+  const handleError = (error: string | Error | any) => {
+    // Parse error to get user-friendly message
+    const donationError = parseDonationError(error);
+    const toastMessage = getToastMessage(donationError);
+    
+    setToast({ message: toastMessage, type: 'error' });
     // Call parent callback if provided
     if (onError) {
-      onError(error);
+      onError(toastMessage);
     }
+    // Clear toast after 4 seconds
+    setTimeout(() => setToast(null), 4000);
   };
 
   return (
